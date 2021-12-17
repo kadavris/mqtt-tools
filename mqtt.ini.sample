@@ -1,0 +1,30 @@
+[DEFAULT]
+capath = /etc/ssl/certs
+cafile = /etc/ssl/certs/ca.pem
+crt    = /etc/ssl/certs/thishost.cert.pem
+key    = /etc/smarthome/mqtt/ssl/thishost.key.pem
+auth   = ssl # 'user' or 'ssl'
+server = your.default.mqtt.server's.domain
+keepalive = 15
+clientid = someid-keep.it.unique.or.your.clients.will.fight.each.other
+# anti-zombie cheat: how many seconds of parent inactivity to allow before force exit
+# comment out if not needed
+max_inactivity = 600
+
+[your.default.mqtt.server.domain]
+auth = user
+user = <username>
+pass = <password>
+
+[cloud-connect-stuff]
+server = your.cloud.com
+auth   = ssl
+keepalive = 60
+
+[another-section]
+auth = user
+# you can reference other section data like this:
+user = ${your.default.mqtt.server.domain:user}
+pass = ${your.default.mqtt.server.domain:pass}
+clientid = other.instance
+

@@ -1,0 +1,684 @@
+#!/usr/bin/env python3
+"""
+Helper script to send/subscribe messages with MQTT.
+repo is in github.com/kadavris
+Copyright by Andrej Pakhutin (pakhutin <at> gmail)
+Provided under the terms of the GNU General Public License version 2 (GPL-2.0)
+"""
+import argparse
+import configparser
+import json
+import os
+import os.path
+import paho.mqtt.client as mqtt
+import signal
+import ssl
+import sys
+import time
+import uuid
+
+
+#############################################################
+def bailout(exit_code=0, msg=None) -> None:
+    """
+    Provides easy message drop & hard exit that helps with hung mqtt loop thread
+    :param exit_code: int
+    :param msg: string to print [optional]
+    :return: None
+    """
+    if msg is not None:
+        print('!', msg, file=sys.stderr)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(exit_code)
+
+
+#############################################################
+def handle_alarm(signum, frame) -> None:
+    """
+    Part of the timeouts handling.
+    SIG_ALRM receptor. Handles communication timeouts.
+    Either attempt to re-connect to mqtt server if set to, or bail out.
+    :param signum: UNUSED
+    :param frame: UNUSED
+    :return: None
+    """
+    global alarm_place, debug, reconnect_on_timeout
+
+    if not reconnect_on_timeout:
+        bailout(1, "! alarm loop or client input timeout in " + alarm_place + ". Exiting")
+
+    reconnect_on_timeout = False  # indicate that mqtt operations should be retried
+
+    if debug:
+        print("! Timeout in", alarm_place, file=sys.stderr)
+
+    # connect() will trace all errors
+    reconnect()
+
+
+#############################################################
+def set_alarm(seconds, tag, do_reconnect=False) -> None:
+    """
+    Part of the timeouts handling.
+    Initiates backround coundown in case of communication problems with mqtt server
+
+    :param seconds: number of seconds to wait before emitting SIG_ALARM signal
+    :param tag: string. Marks the place for tracing purposes
+    :param do_reconnect: bool. Attempt to reconnect first if problem arise.
+    :return: None
+    """
+    global alarm_place, reconnect_on_timeout
+
+    if seconds <= 0:
+        clear_alarm()
+        return
+
+    signal.alarm(seconds)
+    alarm_place = tag
+    reconnect_on_timeout = do_reconnect
+
+
+#############################################################
+def clear_alarm() -> None:
+    """
+    Part of the timeouts handling. Clears timer.
+    :return: None
+    """
+    global alarm_place
+
+    signal.alarm(0)
+    alarm_place = ''
+
+
+#############################################################
+def handle_sigpipe(signum, frame) -> None:
+    """
+    Receptacle of SIG_PIPE signal. Mostly means that client who called us has died.
+    :param signum: UNUSED
+    :param frame: UNUSED
+    :return: None
+    """
+    bailout(1, "! SIGPIPE detected. exiting")
+
+
+#############################################################
+def load_config(config_file, default_path) -> None:
+    """
+    Loads .ini and may do some initializing of defaults
+    :param config_file: str. Path to .ini file
+    :param default_path: str. Last resort to find .ini
+    :return: None
+    """
+    global config
+
+    file = config_file
+
+    if not os.path.exists(file):
+        if file.find(r'/') < 0:  # full path there - cant go default
+            print("! Can't open config: " + file, file=sys.stderr)
+            sys.exit(1)
+
+        file = os.path.dirname(sys.argv[0]) + '/' + config_file
+
+        if not os.path.exists(file):
+            file = default_path + "/" + config_file
+
+        if not os.path.exists(file):
+            bailout(1, "! Can't find your config anywhere")
+
+    config = configparser.ConfigParser(interpolation=configparser.ExtendedInterpolation())
+    config.read(file)
+
+
+####################################################
+def on_log(client, userdata, level, buf) -> None:
+    """
+    The callback for debugging of mqtt part. See paho.mqtt doc
+    :param client: UNUSED
+    :param userdata: UNUSED
+    :param level: UNUSED
+    :param buf: UNUSED
+    :return: None
+    """
+    print('#', buf, file=sys.stderr)
+
+
+####################################################
+def on_connect(client, userdata, flags, rc) -> None:
+    """
+    The callback for when the client receives a CONNACK response from the server.
+    :param client: UNUSED
+    :param userdata: UNUSED
+    :param flags: UNUSED
+    :param rc: Resul code
+    :return: None
+    """
+    global args, connected
+
+    # checking for problems:
+
+    rc_codes = {
+        1: 'incorrect protocol version',
+        2: 'invalid client identifier',
+        3: 'server unavailable',
+        4: 'bad username or password',
+        5: 'not authorised'
+    }
+
+    if rc != 0:
+        reason = rc_codes[rc] if rc in rc_codes else 'unspecified'
+        print('{ "message":"connect failed with RC', str(rc) + ':', reason + '. exiting", "rc":' + str(rc), '}')
+        bailout(1)
+
+    # connect() will set connected to false before reconnect attempt, so we know if it us of automatic
+    if not connected and on_connect.connected_on > 0:  # reconnect
+        if time.time() - on_connect.connected_on < 3.0:  # less than 3 sec
+            on_connect.fast_reconnects += 1
+        else:
+            on_connect.fast_reconnects = 0
+
+        if on_connect.fast_reconnects == 3:  # lucky number
+            bailout(1, "mqtt-tool: Too many fast reconnects. exiting.")
+
+    on_connect.connected_on = time.time()
+
+
+####################################################
+def reconnect() -> None:
+    """
+    Will do connect/reconnect automatically based on the current state
+    :return: None
+    """
+    global args, client_conn, connected, config_section, debug
+
+    clear_alarm()  # make sure it will not loop
+
+    while True:
+        try:  # in case of dead or unresponsive mqtt server
+            if connected:  # disconnecting first then
+                if debug:
+                    print('. mqtt-tool: reconnect requested', file=sys.stderr)
+
+                client_conn.loop_stop()
+                client_conn.disconnect()
+
+                while client_conn.is_connected():  # waiting for conn shutdown
+                    time.sleep(1)
+
+                connected = False
+
+            client_conn.connect(config_section['server'], port=int(config_section['port']),
+                                keepalive=int(config_section['keepalive']))
+
+            # async way tend to acknowledge subsequent sub/pub commands _before_ actual connect is made
+            # this may be misleading when credentials are wrong and connect is actually failed
+            client_conn.loop_start()
+
+            while not client_conn.is_connected():
+                time.sleep(1)
+
+            break
+
+        except ConnectionRefusedError:
+            #  just wait for the server to start up and not flood /var/log/ with exception fuckery
+            time.sleep(10)
+
+    connected = True
+
+    if debug:
+        print(". mqtt-tool: Connected", file=sys.stderr)
+
+
+####################################################
+def on_message(client, userdata, msg) -> None:
+    """
+    The callback for when a PUBLISH message is received from the server.
+    The output format for incoming messages: { "subscription":"topic name", "message":"payload content" }
+    :param client: UNUSED
+    :param userdata: UNUSED
+    :param msg: mqtt message object
+    :return: None
+    """
+    global messages_received
+
+    print('{ "subscription":"' + msg.topic + '", "message":"' + str(msg.payload).replace('"', '\"') + '" }')
+    messages_received += 1
+
+
+####################################################
+def on_publish(client, userdata, mid) -> None:
+    """
+    The callback for when a PUBLISH has been done.
+    BUG: Unused due to apparent lack of this event callback initiation in mqtt.
+    :param client: UNUSED
+    :param userdata: UNUSED
+    :param mid: Message ID
+    :return: None
+    """
+    global mids
+
+    if mid not in mids:
+        print('{ "message":"untracked message callback detected", rc:1, "id":' + str(mid) + ' }')
+        return
+
+    (topic, msg) = mids[mid]  # save for reporting below
+    del mids[mid]
+
+    if not args.quiet:
+        print('{ "message":"published", "rc":0, "id":' + str(mid) +
+              ', "topic":"' + topic + '", "payload":"' + msg.replace('"', '\"') + '" }')
+
+
+####################################################
+def subscribe(client, topic) -> bool:
+    """
+    Wrapper for the topic subscription process
+    :param client: mqtt.client object
+    :param topic: topic name
+    :return: bool. Success?
+    """
+
+    set_alarm(30, "subscribe()", False)
+
+    (r, mid) = client.subscribe(topic, args.qos)
+
+    clear_alarm()
+
+    if r != mqtt.MQTT_ERR_SUCCESS:
+        print('{ "message":"subscribe failed", "rc":' + str(r) + ', "topic":"' + topic + '" }')
+        return False
+
+    if not args.oneshot and not args.quiet:  # make output simpler for one-time checks
+        print('{ "message":"subscribed", "rc":' + str(r) + ', "topic":"' + topic + '" }')
+
+    return True
+
+
+####################################################
+def publish(topic, msg, qos=0, retain=False) -> None:
+    """
+    Wrapper for publishing process
+    :param topic: str. topic name
+    :param msg: message object
+    :param qos: QoS
+    :param retain: Retain flag
+    :return: None
+    """
+    global args, client_conn
+
+    set_alarm(30, "publish()", False)
+
+    mi = client_conn.publish(topic, msg, qos, retain)
+    mi.wait_for_publish()
+
+    clear_alarm()
+
+    if not args.quiet:
+        print('{ "message":"published", "rc":0, "id":' + str(mi.mid)
+              + ', "topic":"' + topic + '", "payload":"' + msg.replace('"', '\"') + '" }')
+
+
+####################################################
+def unsubscribe(topic: str) -> None:
+    """
+    Wrapper for unsubscribe process
+    :param topic: str. topic name
+    :return: None
+    """
+    global args, client_conn
+
+    set_alarm(30, "unsubscribe()", False)
+
+    (r, mid) = client_conn.unsubscribe(topic)
+
+    if r == mqtt.MQTT_ERR_SUCCESS:
+        if not args.quiet:
+            print('{ "message":"unsubscribed", "rc":0 }')
+    else:
+        print('{ "message":"unsubscribe failed", "rc":' + str(r) + ' }')
+
+    clear_alarm()
+
+
+####################################################
+def will_set(topic: str, payload, qos=0, retain=False) -> None:
+    """
+    Wrapper for the will set process
+    :param topic: str. topic name
+    :param payload: Any. message
+    :param qos: QoS
+    :param retain: Retain flag
+    :return: None
+    """
+    global args, client_conn
+
+    set_alarm(30, "will_set()", False)
+
+    mi = client_conn.will_set(topic, payload, qos, retain)
+
+    clear_alarm()
+
+    if not args.quiet:
+        print('{ "message":"will is set", "rc":0, "id":' + str(mi.mid)
+              + ', "topic":"' + t + '", "payload":"' + payload.replace('"', '\"') + '" }')
+
+
+####################################################
+def sub_loop() -> None:
+    """
+    Subscribes to a list of topics from the command line, then
+    1) for "one-shot mode" immediately spill out what's retained there and exit
+    2) else gets into interactive mode for continuous monitoring
+    :return: None
+    """
+    global args, client_conn, messages_received
+
+    client_conn.on_message = on_message
+
+    for topic in args.topics:
+        if not subscribe(client_conn, topic):
+            bailout(1)
+
+    if not args.oneshot:
+        go_stdin()
+        bailout()  # should not return normally
+
+    # one shot stuff
+    time.sleep(1)  # A Generous timeout
+
+    if messages_received == 0:
+        print('{ "message":"empty", "rc":0 }')
+
+    client_conn.loop_stop()
+    client_conn.disconnect()
+
+    bailout(0)
+
+
+####################################################
+def go_stdin() -> None:
+    """
+    Interactive/pipe mode for chaining to data collection stuff thet need our functions
+    Input and output is in JSON.
+    Possible input commands:
+    { "user":"name", "password":"..." } - use these for logging into mqtt server
+    { "cmd":"..." } - arbitrary commands.
+        "exit" - stop processing. we're done
+    { "publish":"message", "topics":[], "retain":bool, "qos":qos } - publish a short message to topic(s)
+    { "mpublish":"EOM ID", "topics":[], "retain":bool, "qos":qos }Message to sendEOM ID
+        publish long message to topic(s). The process will scan for <EOM ID> string after the JSON
+        and send anything inbetween as a message text
+    { "subscribe":[topics list], "retain":bool, "qos":qos } - subscribe to topic(s)
+        The output for incoming messages: { "subscription":"topic name", "message":"payload content" }
+    { "unsubscribe":[topics list], "retain":bool, "qos":qos } - unsubscribe from topic(s)
+    { "will":[topics list], "retain":bool, "qos":qos } - set "last will" to topic(s)
+    :return: None
+    """
+    global args, client_conn, connected, config_section, debug, mids
+    client_conn.on_message = on_message
+    #  client_conn.on_publish = on_publish #  NOTE: this stuff doesn't work for some obscure reason
+
+    incoming_msg = ""
+
+    last_input_time = time.time()  # attempt to catch wakeup after hibernate/sleep and restart connection
+
+    while True:
+        if time.time() > last_input_time + 300.0:  # soft anti-zombie action: 5 minutes is probably too much
+            connected = False #  just flagging for reconnection later
+
+            if debug:
+                print("? Triggered the restart of mqtt connection after the long wait", file=sys.stderr)
+
+        # hard anti-zombie action: drop dead if parent doesn't provide a command for too long
+        if 'max_inactivity' in config_section:
+            set_alarm(int(config_section['max_inactivity']), "go_stdin()/readline()", False)
+
+        if incoming_msg[-1:] == '\\':  # handle multiline stuff
+            incoming_msg = incoming_msg[0:-1] + sys.stdin.readline().rstrip()
+        else:
+            incoming_msg = sys.stdin.readline().rstrip()
+
+        clear_alarm()
+        last_input_time = time.time()
+
+        if len(incoming_msg) == 0 or incoming_msg[-1:] == '\\':  # empty or still cont to the next line
+            continue
+
+        try:
+            json_parsed = json.loads(incoming_msg)
+        except:
+            print('{ "message":"invalid json", "rc":1 }')
+            if debug:
+                print("!D: Invalid json arrived:", incoming_msg, file=sys.stderr)
+
+            continue
+        finally:
+            incoming_msg = ''
+
+        if 'user' in json_parsed:  # { "user":"name", "password":"..." }
+            client_conn.username_pw_set(json_parsed['user'],
+                                        password=json_parsed['password'] if 'password' in json_parsed else None)
+            continue
+
+        if 'cmd' in json_parsed:  # specials
+            if json_parsed['cmd'] == 'exit':  # exit/done
+                break
+
+        if not connected:
+            reconnect()
+
+        if 'publish' in json_parsed or 'mpublish' in json_parsed:
+            # { "[m]publish":"message", "topics":[], "retain":bool, "qos":num }
+            r = 'retain' in json_parsed and json_parsed['retain']
+            q = json_parsed['qos'] if 'qos' in json_parsed else 0
+
+            msg = ''
+            if 'publish' in json_parsed:
+                msg = json_parsed['publish']
+            else:
+                # now read the actual message for mpublish
+                while True:
+                    tmp_line = sys.stdin.readline()
+
+                    p = tmp_line.find(json_parsed['mpublish'])  # look for EOM marker
+                    if p >= 0:
+                        msg += tmp_line[0:p]
+                        break
+
+                    msg += tmp_line
+
+            for topic in json_parsed['topics']:
+                publish(topic, msg, q, r)
+
+        elif 'subscribe' in json_parsed:  # { "subscribe":[topics] }
+            for topic in json_parsed['subscribe']:
+                subscribe(client_conn, topic)
+
+        elif 'unsubscribe' in json_parsed:  # { "unsubscribe":[topics] }
+            for topic in json_parsed['unsubscribe']:
+                unsubscribe(topic)
+
+        elif 'will' in json_parsed:  # { "will":"message", "topic":[], "retain":bool, "qos":num }
+            r = 'retain' in json_parsed and json_parsed['retain']
+            q = json_parsed['qos'] if 'qos' in json_parsed else 0
+
+            for topic in json_parsed['topics']:
+                will_set(topic, json_parsed['will'], q, r)
+
+        else:
+            print('{ "message":"unknown command", "rc":1 }')
+
+    set_alarm(30, "go_stdin() finalization")
+    client_conn.loop_stop()
+    client_conn.disconnect()
+
+    bailout(0)
+
+
+####################################################
+####################################################
+global config
+
+config_path = '/etc/smarthome/mqtt/mqtt.ini'  # default
+connected = False  # for handling stuff in stdin mode
+last_input = time.time()  # parent's last input time.
+mids = dict()  # to track messages in stdin mode
+messages_received = 0  # to check if we got answer for one-shot sub
+on_connect.fast_reconnects = 0  # how many attempts to reconnect were within the short time period
+on_connect.connected_on = 0  # time()
+reconnect_on_timeout = False
+alarm_place = ''  # if inactivity limit is set then this will control anti-zombiefying
+####################################################
+
+parser = argparse.ArgumentParser(
+    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.232.'
+                ' Copyright (c) 2021+ by Andrej Pakhutin')
+
+parser.add_argument('-c', '--config', dest='config_path', action='store', default=config_path,
+                    help='path to non-default (' + config_path + ') config file')
+parser.add_argument('--clientid', dest='clientid', action='store', default='',
+                    help='Overrides clientid from .ini and autogenerated one')
+parser.add_argument('-d', '--debug', dest='debug', action='store_true', default=False, help='debug mode')
+parser.add_argument('-i', '--stdin', dest='stdin_mode', action='store_true', default=False,
+                    help='work in stdin mode, accepting multiple commands in json')
+parser.add_argument('-m', '--message', dest='message', action='store', help='message to send')
+parser.add_argument('--oneshot', dest='oneshot', action='store_true', default=False,
+                    help='Use with -s (subscribe) to get the first (retained) message only')
+parser.add_argument('-r', '--retain', dest='retain', action='store_true', default=False, help='retain mode')
+parser.add_argument('-s', '--subscribe', dest='subscribe', action='store_true', default=False,
+                    help='subscribe to topic(s)')
+parser.add_argument('-t', '--topic', dest='topics', action='append',
+                    help='topic to send to or topic(s) to subscribe (may be repeated)')
+parser.add_argument('-u', '--user', dest='username', action='store', default='', help='user name')
+parser.add_argument('-p', '--password', dest='password', action='store', default=None,
+                    help='password (if you willing to show it in processes)')
+parser.add_argument('-q', '--qos', dest='qos', action='store', type=int, default=0, help='QoS code (0,1,2)')
+parser.add_argument('--quiet', dest='quiet', action='store_true', default=False,
+                    help='do not print operations acknowledge messages')
+parser.add_argument('section', nargs='?', default='', help='The name of .ini section name to use')
+
+args = parser.parse_args()
+
+load_config(args.config_path, "/etc/smarthome/mqtt/")
+
+config_section = args.section
+if config_section == '':
+    if 'server' in config['DEFAULT']:
+        config_section = config['DEFAULT']['server']
+    else:
+        bailout(1, "! mqtt-tool: Default server is not set in the config. Provide section name in command line")
+
+if config_section not in config:
+    bailout(1, "! mqtt-tool: ERROR. Section name '" + config_section + "' not in " + config_path)
+
+config_section = config[config_section]
+
+debug = False
+
+if args.debug:
+    debug = True
+elif 'debug' in config_section:
+    debug = config_section.getboolean('debug')
+
+if debug:
+    print(". mqtt-tool: Using .ini section: ", config_section, file=sys.stderr)
+
+client_id = ''
+if args.clientid != '':
+    client_id = args.clientid
+elif 'clientid' in config_section:
+    client_id = config_section['clientid']
+else:
+    client_id = 'mqtt-tool-' + str(uuid.uuid4())
+
+signal.signal(signal.SIGALRM, handle_alarm)
+signal.signal(signal.SIGPIPE, handle_sigpipe)
+
+client_conn = mqtt.Client(client_id)
+client_conn.on_connect = on_connect
+
+if debug:
+    client_conn.on_log = on_log
+    client_conn.enable_logger()
+
+authmode = ''  # this will be a debug message to user. Also an indication of auth settings error if comes empty
+
+if args.username != '':  # use to switch ACLs
+    client_conn.username_pw_set(args.username, password=args.password)
+    authmode = 'user/pass override from commandline'
+elif 'auth' in config_section and config_section['auth'].lower() == 'user':
+    client_conn.username_pw_set(config_section['user'], password=config_section['pass'])
+    authmode = 'user/pass from .ini'
+
+if 'auth' in config_section and config_section['auth'].lower() == 'ssl':
+    authmode = 'SSL from .ini'
+
+    # setting some defaults:
+    if 'port' not in config_section:
+        config_section['port'] = '8883'
+
+    # context = ssl.create_default_context()
+    # context.verify_mode = ssl.CERT_REQUIRED
+    # context.check_hostname = True
+    # context.load_default_certs()
+    # client_conn.tls_set_context( context )
+
+    if 'cafile' not in config_section or 'crt' not in config_section \
+            or 'key' not in config_section:
+        bailout(1, "! mqtt-tool: Invalid SSL configuration. Provide 'cafile', 'crt' and 'key' items")
+
+    client_conn.tls_set(
+        ca_certs=config_section['cafile'],
+        certfile=config_section['crt'],
+        keyfile=config_section['key'],
+        cert_reqs=ssl.CERT_REQUIRED,
+        tls_version=ssl.PROTOCOL_TLS,
+        ciphers=None
+        # SSL_ca_path   => config[ sever ][ 'capath' ]
+    )
+else:
+    # not SSL. note that user/pass already set when we checked for command line override
+    # setting some defaults:
+    if 'port' not in config_section:
+        config_section['port'] = '1883'
+
+if authmode == '':
+    bailout(1, "! mqtt-tool: ERROR: authentication mode were not set. Check you .ini and/or command line!")
+
+if debug:
+    print(". mqtt-tool: auth mode:", authmode, file=sys.stderr)
+
+if 'keepalive' not in config_section:
+    config_section['keepalive'] = '20'
+
+# --------------------------------------------
+if args.stdin_mode:
+    go_stdin()
+
+# --------------------------------------------
+if args.topics is None:
+    print("! mqtt-tool: Topic(s) are undefined!", file=sys.stderr)
+    parser.print_help()
+    sys.exit(1)
+
+reconnect()
+
+if args.subscribe:
+    sub_loop()
+    bailout()
+
+# --------------------------------------------
+if args.message is None:
+    print("! mqtt-tool: Message is not provided!", file=sys.stderr)
+    parser.print_help()
+    bailout(1)
+
+for t in args.topics:
+    try:
+        publish(t, args.message, args.retain, args.qos)
+    except:
+        break
+
+client_conn.disconnect()
