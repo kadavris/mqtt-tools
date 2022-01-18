@@ -7,6 +7,9 @@ auth   = ssl # 'user' or 'ssl'
 server = your.default.mqtt.server's.domain
 keepalive = 15
 clientid = someid-keep.it.unique.or.your.clients.will.fight.each.other
+# or RANDOM_UUID will be replaced with random generated UUID
+#clientid = somename-RANDOM_UUID
+
 # anti-zombie cheat: how many seconds of parent inactivity to allow before force exit
 # comment out if not needed
 max_inactivity = 600

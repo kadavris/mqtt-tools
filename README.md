@@ -66,3 +66,32 @@ Set username. Overrides what's in .ini:
 #### Common answers (mostly problems):
 * { "message":"invalid json", "rc":return_code }
 * { "message":"unknown command", "rc":return_code }
+
+# .ini file
+Use `[DEFAULT]` section to set common variables that will be re-used as is from worker sections   
+Aslo you may reference sections other than DEFAULT variables like this:  
+
+        user = ${your.other section.name:user}
+        pass = ${your.other section.name:pass}
+
+### SSL configuration
+Please consult openssl documentation for details on how it works.
+You should use `auth = ssl` to activate SSL mode!  
+`capath` - directory where SSL CA certificate bundle stored. Usually `/etc/pki/tls/certs`  
+`cafile` - full path to CA certificate or bundle. Usually `/etc/pki/tls/certs/ca-bundle.crt`   
+`crt` - file with our public certificate.     
+`key` - file with our private key.  
+
+### Authentication
+`auth` - authentication mode: `user` or `ssl`  
+`user` - username. Used with `auth = user`
+`pass` - Password. Used with `auth = user`
+
+`server` - domain or IP  
+`keepalive` - (seconds) how often to send keepalives.    
+`max_inactivity` - (seconds) Anti-zombie cheat: how many seconds of caller's process inactivity to allow before forced exit. Comment out if not needed
+
+`clientid` - MQTT client ID.  
+If value has `RANDOM_UUID` substring somewhere, it will be replaced with random generated UUID  
+If `clientid` option is omitted then it will be generated randomly.
+

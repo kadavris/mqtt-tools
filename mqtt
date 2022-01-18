@@ -116,7 +116,7 @@ def load_config(config_file, default_path) -> None:
     file = config_file
 
     if not os.path.exists(file):
-        if file.find(r'/') < 0:  # full path there - cant go default
+        if file.find(r'/') < 0:  # full path there - can't go default
             print("! Can't open config: " + file, file=sys.stderr)
             sys.exit(1)
 
@@ -592,6 +592,8 @@ elif 'clientid' in config_section:
     client_id = config_section['clientid']
 else:
     client_id = 'mqtt-tool-' + str(uuid.uuid4())
+
+client_id.replace( 'RANDOM_UUID', str(uuid.uuid4()), 1 )
 
 signal.signal(signal.SIGALRM, handle_alarm)
 signal.signal(signal.SIGPIPE, handle_sigpipe)
