@@ -63,9 +63,13 @@ Set username. Overrides what's in .ini:
   * { "message":"unsubsribed", "rc":0 }
   * { "message":"unsubsribe failed", "rc":return_code }
 
-#### Common answers (mostly problems):
+#### Common answers:
 * { "message":"invalid json", "rc":return_code }
 * { "message":"unknown command", "rc":return_code }
+
+At the end of the most messages there will be "mqtt-tool" object with members:
+* answer_date_time: human-readable time YYYY-MM-DDTHH:MM:SS
+* answer_timestamp: UNIX timestamp
 
 # .ini file
 Use `[DEFAULT]` section to set common variables that will be re-used as is from worker sections   

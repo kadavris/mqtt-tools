@@ -133,6 +133,26 @@ def load_config(config_file, default_path) -> None:
 
 
 ####################################################
+def print_answer(*kw) -> None:
+    """
+    Use to print simple json from input args array.
+    Adds time info at the end.
+    :param kw: key1, val1, etc
+    :return: None
+    """
+    print('"{', end="")
+
+    iskw = True
+    for i in kw:
+        print('"', i, '"', ":" if iskw else ", ", end="", sep="")
+        iskw = not iskw
+
+    print('"mqtt-tool":{',
+        '"answer_date_time":"' + time.strftime("%Y-%m-%dT%H:%M:%S") + '",',
+        '"answer_timestamp":' + str(int(time.time())) + '}}')
+
+
+####################################################
 def on_log(client, userdata, level, buf) -> None:
     """
     The callback for debugging of mqtt part. See paho.mqtt doc
@@ -169,7 +189,7 @@ def on_connect(client, userdata, flags, rc) -> None:
 
     if rc != 0:
         reason = rc_codes[rc] if rc in rc_codes else 'unspecified'
-        print('{ "message":"connect failed with RC', str(rc) + ':', reason + '. exiting", "rc":' + str(rc), '}')
+        print_answer("message", "connect failed with RC " + rc + ": " + reason + ". exiting", "rc", rc)
         bailout(1)
 
     # connect() will set connected to false before reconnect attempt, so we know if it us of automatic
@@ -243,7 +263,8 @@ def on_message(client, userdata, msg) -> None:
     """
     global messages_received
 
-    print('{ "subscription":"' + msg.topic + '", "message":"' + str(msg.payload).replace('"', '\"') + '" }')
+    print_answer("subscription", str(msg.topic).replace('"', '\"'),
+                 "message", str(msg.payload).replace('"', '\"'))
     messages_received += 1
 
 
@@ -260,15 +281,15 @@ def on_publish(client, userdata, mid) -> None:
     global mids
 
     if mid not in mids:
-        print('{ "message":"untracked message callback detected", rc:1, "id":' + str(mid) + ' }')
+        print_answer("message", "untracked message callback detected", "rc", "1", "id", mid )
         return
 
     (topic, msg) = mids[mid]  # save for reporting below
     del mids[mid]
 
     if not args.quiet:
-        print('{ "message":"published", "rc":0, "id":' + str(mid) +
-              ', "topic":"' + topic + '", "payload":"' + msg.replace('"', '\"') + '" }')
+        print_answer("message", "published", "rc", "0", "id", mid,
+                     "topic", topic, "payload", msg.replace('"', '\"') )
 
 
 ####################################################
@@ -287,11 +308,11 @@ def subscribe(client, topic) -> bool:
     clear_alarm()
 
     if r != mqtt.MQTT_ERR_SUCCESS:
-        print('{ "message":"subscribe failed", "rc":' + str(r) + ', "topic":"' + topic + '" }')
+        print_answer("message", "subscribe failed", "rc", r, "topic", topic)
         return False
 
     if not args.oneshot and not args.quiet:  # make output simpler for one-time checks
-        print('{ "message":"subscribed", "rc":' + str(r) + ', "topic":"' + topic + '" }')
+        print("message", "subscribed", "rc", r, "topic", topic)
 
     return True
 
@@ -311,13 +332,17 @@ def publish(topic, msg, qos=0, retain=False) -> None:
     set_alarm(30, "publish()", False)
 
     mi = client_conn.publish(topic, msg, qos, retain)
-    mi.wait_for_publish()
+
+    if mi.rc == mqtt.MQTT_ERR_SUCCESS:
+        mi.wait_for_publish()
+        if not args.quiet:
+            print_answer("message", "published", "rc", 0, "id", mi.mid,
+                         "topic", topic, "payload", msg.replace('"', '\"'))
+    else:
+        if not args.quiet:
+            print_answer("message", "publish failed", "rc", mi.rc)
 
     clear_alarm()
-
-    if not args.quiet:
-        print('{ "message":"published", "rc":0, "id":' + str(mi.mid)
-              + ', "topic":"' + topic + '", "payload":"' + msg.replace('"', '\"') + '" }')
 
 
 ####################################################
@@ -335,9 +360,9 @@ def unsubscribe(topic: str) -> None:
 
     if r == mqtt.MQTT_ERR_SUCCESS:
         if not args.quiet:
-            print('{ "message":"unsubscribed", "rc":0 }')
+            print_answer("message", "unsubscribed", "rc", 0)
     else:
-        print('{ "message":"unsubscribe failed", "rc":' + str(r) + ' }')
+        print_answer("message", "unsubscribe failed", "rc", r)
 
     clear_alarm()
 
@@ -361,8 +386,8 @@ def will_set(topic: str, payload, qos=0, retain=False) -> None:
     clear_alarm()
 
     if not args.quiet:
-        print('{ "message":"will is set", "rc":0, "id":' + str(mi.mid)
-              + ', "topic":"' + t + '", "payload":"' + payload.replace('"', '\"') + '" }')
+        print_answer("message", "will is set", "rc", mi.rc, "id", mi.mid,
+                     "topic", t, "payload", payload.replace('"', '\"'))
 
 
 ####################################################
@@ -389,7 +414,7 @@ def sub_loop() -> None:
     time.sleep(1)  # A Generous timeout
 
     if messages_received == 0:
-        print('{ "message":"empty", "rc":0 }')
+        print_answer("message", "empty", "rc", 0)
 
     client_conn.loop_stop()
     client_conn.disconnect()
@@ -425,7 +450,7 @@ def go_stdin() -> None:
     last_input_time = time.time()  # attempt to catch wakeup after hibernate/sleep and restart connection
 
     while True:
-        if time.time() > last_input_time + 300.0:  # soft anti-zombie action: 5 minutes is probably too much
+        if time.time() > last_input_time + int(config_section['max_inactivity']):  # soft anti-zombie action
             connected = False #  just flagging for reconnection later
 
             if debug:
@@ -449,7 +474,7 @@ def go_stdin() -> None:
         try:
             json_parsed = json.loads(incoming_msg)
         except:
-            print('{ "message":"invalid json", "rc":1 }')
+            print_answer("message", "invalid json", "rc", 1)
             if debug:
                 print("!D: Invalid json arrived:", incoming_msg, file=sys.stderr)
 
@@ -508,13 +533,11 @@ def go_stdin() -> None:
                 will_set(topic, json_parsed['will'], q, r)
 
         else:
-            print('{ "message":"unknown command", "rc":1 }')
+            print_answer("message", "unknown command", "rc", 1)
 
     set_alarm(30, "go_stdin() finalization")
     client_conn.loop_stop()
     client_conn.disconnect()
-
-    bailout(0)
 
 
 ####################################################
@@ -533,8 +556,8 @@ alarm_place = ''  # if inactivity limit is set then this will control anti-zombi
 ####################################################
 
 parser = argparse.ArgumentParser(
-    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.232.'
-                ' Copyright (c) 2021+ by Andrej Pakhutin')
+    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.24.'
+                ' Copyright (c) 2022+ by Andrej Pakhutin')
 
 parser.add_argument('-c', '--config', dest='config_path', action='store', default=config_path,
                     help='path to non-default (' + config_path + ') config file')
@@ -658,12 +681,13 @@ if 'keepalive' not in config_section:
 # --------------------------------------------
 if args.stdin_mode:
     go_stdin()
+    bailout()
 
 # --------------------------------------------
 if args.topics is None:
     print("! mqtt-tool: Topic(s) are undefined!", file=sys.stderr)
     parser.print_help()
-    sys.exit(1)
+    bailout(1)
 
 reconnect()
 
