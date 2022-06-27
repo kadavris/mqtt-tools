@@ -448,7 +448,7 @@ def go_stdin() -> None:
         The output for incoming messages: { "subscription":"topic name", "message":"payload content" }
     { "unsubscribe":[topics list], "retain":bool, "qos":qos } - unsubscribe from topic(s)
     { "will":[topics list], "retain":bool, "qos":qos } - set "last will" to topic(s)
-    
+
     :return: None
     """
     global args, client_conn, connected, config_section, debug, mids
@@ -561,7 +561,7 @@ def set_config_default(key: str, val) -> None:
     global config_section
 
     if key not in config_section:
-        config[key] = str(val)
+        config_section[key] = str(val)
 
 
 ####################################################
