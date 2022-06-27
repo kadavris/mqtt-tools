@@ -22,8 +22,9 @@ import uuid
 def bailout(exit_code=0, msg=None) -> None:
     """
     Provides easy message drop & hard exit that helps with hung mqtt loop thread
-    :param exit_code: int
-    :param msg: string to print [optional]
+
+    :param: exit_code: int
+    :param: msg: string to print [optional]
     :return: None
     """
     if msg is not None:
@@ -35,14 +36,11 @@ def bailout(exit_code=0, msg=None) -> None:
 
 
 #############################################################
-def handle_alarm(signum, frame) -> None:
+def handle_alarm(*_) -> None:
     """
     Part of the timeouts handling.
     SIG_ALRM receptor. Handles communication timeouts.
     Either attempt to re-connect to mqtt server if set to, or bail out.
-    :param signum: UNUSED
-    :param frame: UNUSED
-    :return: None
     """
     global alarm_place, debug, reconnect_on_timeout
 
@@ -64,9 +62,9 @@ def set_alarm(seconds, tag, do_reconnect=False) -> None:
     Part of the timeouts handling.
     Initiates backround coundown in case of communication problems with mqtt server
 
-    :param seconds: number of seconds to wait before emitting SIG_ALARM signal
-    :param tag: string. Marks the place for tracing purposes
-    :param do_reconnect: bool. Attempt to reconnect first if problem arise.
+    :param: seconds: number of seconds to wait before emitting SIG_ALARM signal
+    :param: tag: string. Marks the place for tracing purposes
+    :param: do_reconnect: bool. Attempt to reconnect first if problem arise.
     :return: None
     """
     global alarm_place, reconnect_on_timeout
@@ -93,11 +91,10 @@ def clear_alarm() -> None:
 
 
 #############################################################
-def handle_sigpipe(signum, frame) -> None:
+def handle_sigpipe(*_) -> None:
     """
     Receptacle of SIG_PIPE signal. Mostly means that client who called us has died.
-    :param signum: UNUSED
-    :param frame: UNUSED
+
     :return: None
     """
     bailout(1, "! SIGPIPE detected. exiting")
@@ -107,6 +104,7 @@ def handle_sigpipe(signum, frame) -> None:
 def load_config(config_file, default_path) -> None:
     """
     Loads .ini and may do some initializing of defaults
+
     :param config_file: str. Path to .ini file
     :param default_path: str. Last resort to find .ini
     :return: None
@@ -137,7 +135,8 @@ def print_answer(*kw) -> None:
     """
     Use to print simple json from input args array.
     Adds time info at the end.
-    :param kw: key1, val1, etc
+
+    :param: kw: key1, val1, etc
     :return: None
     """
     print('"{', end="")
@@ -148,18 +147,19 @@ def print_answer(*kw) -> None:
         iskw = not iskw
 
     print('"mqtt-tool":{',
-        '"answer_date_time":"' + time.strftime("%Y-%m-%dT%H:%M:%S") + '",',
-        '"answer_timestamp":' + str(int(time.time())) + '}}')
+          '"answer_date_time":"' + time.strftime("%Y-%m-%dT%H:%M:%S") + '",',
+          '"answer_timestamp":' + str(int(time.time())) + '}}')
 
 
 ####################################################
 def on_log(client, userdata, level, buf) -> None:
     """
     The callback for debugging of mqtt part. See paho.mqtt doc
-    :param client: UNUSED
-    :param userdata: UNUSED
-    :param level: UNUSED
-    :param buf: UNUSED
+
+    :param: client: UNUSED
+    :param: userdata: UNUSED
+    :param: level: UNUSED
+    :param: buf: UNUSED
     :return: None
     """
     print('#', buf, file=sys.stderr)
@@ -169,10 +169,11 @@ def on_log(client, userdata, level, buf) -> None:
 def on_connect(client, userdata, flags, rc) -> None:
     """
     The callback for when the client receives a CONNACK response from the server.
-    :param client: UNUSED
-    :param userdata: UNUSED
-    :param flags: UNUSED
-    :param rc: Resul code
+
+    :param: client: UNUSED
+    :param: userdata: UNUSED
+    :param: flags: UNUSED
+    :param: rc: Resul code
     :return: None
     """
     global args, connected
@@ -209,6 +210,7 @@ def on_connect(client, userdata, flags, rc) -> None:
 def reconnect() -> None:
     """
     Will do connect/reconnect automatically based on the current state
+
     :return: None
     """
     global args, client_conn, connected, config_section, debug
@@ -256,9 +258,10 @@ def on_message(client, userdata, msg) -> None:
     """
     The callback for when a PUBLISH message is received from the server.
     The output format for incoming messages: { "subscription":"topic name", "message":"payload content" }
-    :param client: UNUSED
-    :param userdata: UNUSED
-    :param msg: mqtt message object
+
+    :param: client: UNUSED
+    :param: userdata: UNUSED
+    :param: msg: mqtt message object
     :return: None
     """
     global messages_received
@@ -273,15 +276,16 @@ def on_publish(client, userdata, mid) -> None:
     """
     The callback for when a PUBLISH has been done.
     BUG: Unused due to apparent lack of this event callback initiation in mqtt.
-    :param client: UNUSED
-    :param userdata: UNUSED
-    :param mid: Message ID
+
+    :param: client: UNUSED
+    :param: userdata: UNUSED
+    :param: mid: Message ID
     :return: None
     """
     global mids
 
     if mid not in mids:
-        print_answer("message", "untracked message callback detected", "rc", "1", "id", mid )
+        print_answer("message", "untracked message callback detected", "rc", "1", "id", mid)
         return
 
     (topic, msg) = mids[mid]  # save for reporting below
@@ -289,15 +293,16 @@ def on_publish(client, userdata, mid) -> None:
 
     if not args.quiet:
         print_answer("message", "published", "rc", "0", "id", mid,
-                     "topic", topic, "payload", msg.replace('"', '\"') )
+                     "topic", topic, "payload", msg.replace('"', '\"'))
 
 
 ####################################################
 def subscribe(client, topic) -> bool:
     """
     Wrapper for the topic subscription process
-    :param client: mqtt.client object
-    :param topic: topic name
+
+    :param: client: mqtt.client object
+    :param: topic: topic name
     :return: bool. Success?
     """
 
@@ -321,10 +326,11 @@ def subscribe(client, topic) -> bool:
 def publish(topic, msg, qos=0, retain=False) -> None:
     """
     Wrapper for publishing process
-    :param topic: str. topic name
-    :param msg: message object
-    :param qos: QoS
-    :param retain: Retain flag
+
+    :param: topic: str. topic name
+    :param: msg: message object
+    :param: qos: QoS
+    :param: retain: Retain flag
     :return: None
     """
     global args, client_conn
@@ -349,7 +355,8 @@ def publish(topic, msg, qos=0, retain=False) -> None:
 def unsubscribe(topic: str) -> None:
     """
     Wrapper for unsubscribe process
-    :param topic: str. topic name
+
+    :param: topic: str. topic name
     :return: None
     """
     global args, client_conn
@@ -371,10 +378,11 @@ def unsubscribe(topic: str) -> None:
 def will_set(topic: str, payload, qos=0, retain=False) -> None:
     """
     Wrapper for the will set process
-    :param topic: str. topic name
-    :param payload: Any. message
-    :param qos: QoS
-    :param retain: Retain flag
+
+    :param: topic: str. topic name
+    :param: payload: Any. message
+    :param: qos: QoS
+    :param: retain: Retain flag
     :return: None
     """
     global args, client_conn
@@ -396,6 +404,7 @@ def sub_loop() -> None:
     Subscribes to a list of topics from the command line, then
     1) for "one-shot mode" immediately spill out what's retained there and exit
     2) else gets into interactive mode for continuous monitoring
+
     :return: None
     """
     global args, client_conn, messages_received
@@ -439,6 +448,7 @@ def go_stdin() -> None:
         The output for incoming messages: { "subscription":"topic name", "message":"payload content" }
     { "unsubscribe":[topics list], "retain":bool, "qos":qos } - unsubscribe from topic(s)
     { "will":[topics list], "retain":bool, "qos":qos } - set "last will" to topic(s)
+    
     :return: None
     """
     global args, client_conn, connected, config_section, debug, mids
@@ -451,14 +461,13 @@ def go_stdin() -> None:
 
     while True:
         if time.time() > last_input_time + int(config_section['max_inactivity']):  # soft anti-zombie action
-            connected = False #  just flagging for reconnection later
+            connected = False  # just flagging for reconnection later
 
             if debug:
                 print("? Triggered the restart of mqtt connection after the long wait", file=sys.stderr)
 
-        # hard anti-zombie action: drop dead if parent doesn't provide a command for too long
-        if 'max_inactivity' in config_section:
-            set_alarm(int(config_section['max_inactivity']), "go_stdin()/readline()", False)
+        # hard anti-zombie action: drop-dead if parent doesn't provide a command for too long
+        set_alarm(int(config_section['max_inactivity']), "go_stdin()/readline()", False)
 
         if incoming_msg[-1:] == '\\':  # handle multiline stuff
             incoming_msg = incoming_msg[0:-1] + sys.stdin.readline().rstrip()
@@ -541,6 +550,21 @@ def go_stdin() -> None:
 
 
 ####################################################
+def set_config_default(key: str, val) -> None:
+    """
+    Initializes defaults in config
+
+    :param: key: key to look for
+    :param: val: default value to set
+    :return: None
+    """
+    global config_section
+
+    if key not in config_section:
+        config[key] = str(val)
+
+
+####################################################
 ####################################################
 global config
 
@@ -556,7 +580,7 @@ alarm_place = ''  # if inactivity limit is set then this will control anti-zombi
 ####################################################
 
 parser = argparse.ArgumentParser(
-    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.24.'
+    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.242.'
                 ' Copyright (c) 2022+ by Andrej Pakhutin')
 
 parser.add_argument('-c', '--config', dest='config_path', action='store', default=config_path,
@@ -616,7 +640,7 @@ elif 'clientid' in config_section:
 else:
     client_id = 'mqtt-tool-' + str(uuid.uuid4())
 
-client_id.replace( 'RANDOM_UUID', str(uuid.uuid4()), 1 )
+client_id.replace('RANDOM_UUID', str(uuid.uuid4()), 1)
 
 signal.signal(signal.SIGALRM, handle_alarm)
 signal.signal(signal.SIGPIPE, handle_sigpipe)
@@ -628,7 +652,7 @@ if debug:
     client_conn.on_log = on_log
     client_conn.enable_logger()
 
-authmode = ''  # this will be a debug message to user. Also an indication of auth settings error if comes empty
+authmode = ''  # this will be a debug message to user. Also, an indication of auth settings error if it comes empty
 
 if args.username != '':  # use to switch ACLs
     client_conn.username_pw_set(args.username, password=args.password)
@@ -641,8 +665,7 @@ if 'auth' in config_section and config_section['auth'].lower() == 'ssl':
     authmode = 'SSL from .ini'
 
     # setting some defaults:
-    if 'port' not in config_section:
-        config_section['port'] = '8883'
+    set_config_default('port', 8883)
 
     # context = ssl.create_default_context()
     # context.verify_mode = ssl.CERT_REQUIRED
@@ -666,8 +689,7 @@ if 'auth' in config_section and config_section['auth'].lower() == 'ssl':
 else:
     # not SSL. note that user/pass already set when we checked for command line override
     # setting some defaults:
-    if 'port' not in config_section:
-        config_section['port'] = '1883'
+    set_config_default('port', 1883)
 
 if authmode == '':
     bailout(1, "! mqtt-tool: ERROR: authentication mode were not set. Check you .ini and/or command line!")
@@ -675,8 +697,8 @@ if authmode == '':
 if debug:
     print(". mqtt-tool: auth mode:", authmode, file=sys.stderr)
 
-if 'keepalive' not in config_section:
-    config_section['keepalive'] = '20'
+set_config_default('keepalive', 20)
+set_config_default('max_inactivity', 180)  # seconds
 
 # --------------------------------------------
 if args.stdin_mode:
