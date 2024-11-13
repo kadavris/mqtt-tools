@@ -14,6 +14,7 @@ import paho.mqtt.client as mqtt
 import signal
 import ssl
 import sys
+import threading
 import time
 import uuid
 
@@ -32,7 +33,7 @@ def bailout(exit_code=0, msg=None) -> None:
 
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(exit_code)
+    os._exit(exit_code)  # using _exit here because the plain exit() waiting for hung thread anyway.
 
 
 #############################################################
@@ -67,13 +68,19 @@ def set_alarm(seconds, tag, do_reconnect=False) -> None:
     :param: do_reconnect: bool. Attempt to reconnect first if problem arise.
     :return: None
     """
-    global alarm_place, reconnect_on_timeout
+    global alarm_place, reconnect_on_timeout, watchdog
+
+    clear_alarm()
 
     if seconds <= 0:
-        clear_alarm()
         return
 
-    signal.alarm(seconds)
+    if sys.platform.startswith("cygwin") or sys.platform.startswith("win"):
+        watchdog = threading.Timer(seconds, handle_alarm)
+        watchdog.start()
+    else:
+        signal.alarm(seconds)
+
     alarm_place = tag
     reconnect_on_timeout = do_reconnect
 
@@ -84,9 +91,21 @@ def clear_alarm() -> None:
     Part of the timeouts handling. Clears timer.
     :return: None
     """
-    global alarm_place
+    global alarm_place, watchdog
 
-    signal.alarm(0)
+    if sys.platform.startswith("cygwin") or sys.platform.startswith("win"):
+        if watchdog:
+            try:
+                watchdog.cancel()
+            except:
+                pass
+
+            del watchdog
+
+        watchdog = None
+    else:
+        signal.alarm(0)
+
     alarm_place = ''
 
 
@@ -459,12 +478,16 @@ def go_stdin() -> None:
 
     last_input_time = time.time()  # attempt to catch wakeup after hibernate/sleep and restart connection
 
+    json_parsed = {}  # so ide will not nag about use before assignment
+
     while True:
         if time.time() > last_input_time + int(config_section['max_inactivity']):  # soft anti-zombie action
             connected = False  # just flagging for reconnection later
 
             if debug:
                 print("? Triggered the restart of mqtt connection after the long wait", file=sys.stderr)
+
+        time.sleep(1)
 
         # hard anti-zombie action: drop-dead if parent doesn't provide a command for too long
         set_alarm(int(config_section['max_inactivity']), "go_stdin()/readline()", False)
@@ -484,6 +507,7 @@ def go_stdin() -> None:
             json_parsed = json.loads(incoming_msg)
         except:
             print_answer("message", "invalid json", "rc", 1)
+
             if debug:
                 print("!D: Invalid json arrived:", incoming_msg, file=sys.stderr)
 
@@ -512,9 +536,13 @@ def go_stdin() -> None:
             if 'publish' in json_parsed:
                 msg = json_parsed['publish']
             else:
-                # now read the actual message for mpublish
+                # now reading the actual message for mpublish
                 while True:
+                    set_alarm(int(config_section['max_inactivity']), "go_stdin()/mpublish", False)
+
                     tmp_line = sys.stdin.readline()
+
+                    clear_alarm()
 
                     p = tmp_line.find(json_parsed['mpublish'])  # look for EOM marker
                     if p >= 0:
@@ -577,6 +605,7 @@ on_connect.fast_reconnects = 0  # how many attempts to reconnect were within the
 on_connect.connected_on = 0  # time()
 reconnect_on_timeout = False
 alarm_place = ''  # if inactivity limit is set then this will control anti-zombiefying
+watchdog = None  # alarm watchdog class instance if any
 ####################################################
 
 parser = argparse.ArgumentParser(
@@ -642,8 +671,11 @@ else:
 
 client_id.replace('RANDOM_UUID', str(uuid.uuid4()), 1)
 
-signal.signal(signal.SIGALRM, handle_alarm)
-signal.signal(signal.SIGPIPE, handle_sigpipe)
+if hasattr(signal, 'SIGALRM'):  # no alarm on windows
+    signal.signal(signal.SIGALRM, handle_alarm)
+
+if hasattr(signal, 'SIGPIPE'):  # no alarm on windows
+    signal.signal(signal.SIGPIPE, handle_sigpipe)
 
 client_conn = mqtt.Client(client_id)
 client_conn.on_connect = on_connect
