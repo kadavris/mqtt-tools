@@ -202,22 +202,8 @@ def on_connect(client, userdata, flags, reason_code, properties) -> None:
 
     # checking for problems:
 
-    rc_codes = {  # V1 reason codes
-        1: 'incorrect protocol version',
-        2: 'invalid client identifier',
-        3: 'server unavailable',
-        4: 'bad username or password',
-        5: 'not authorised'
-    }
-
     if reason_code != 0:  # Works in V1/V2
-        if reason_code is mqtt.ReasonCode:  # in V2 using as object
-            reason = reason_code
-        else:
-            reason = rc_codes[reason_code] if reason_code in rc_codes else 'unspecified'
-
-        print_answer("message", "connect failed with RC " + reason_code + ": " + reason + ". exiting",
-                     "rc", reason_code)
+        print_answer("message", "connect failed with RC " + reason_code + ". exiting")
         bailout(1)
 
     # connect() will set connected to false before reconnect attempt, so we know if it us of automatic
@@ -231,6 +217,23 @@ def on_connect(client, userdata, flags, reason_code, properties) -> None:
             bailout(1, "mqtt-tool: Too many fast reconnects. exiting.")
 
     on_connect.connected_on = time.time()
+
+
+####################################################
+def on_connect_v1(client, userdata, flags, rc) -> None:  # V2 added/changed reason_code, properties
+    rc_codes = {  # V1 reason codes
+        1: 'incorrect protocol version',
+        2: 'invalid client identifier',
+        3: 'server unavailable',
+        4: 'bad username or password',
+        5: 'not authorised'
+    }
+
+    if rc == 0:
+        on_connect(client, userdata, flags, 0, dict())
+    else:
+        reason = rc_codes[rc] if rc in rc_codes else 'unspecified'
+        on_connect(client, userdata, flags, reason, dict())
 
 
 ####################################################
@@ -697,10 +700,10 @@ if hasattr(signal, 'SIGPIPE'):  # no alarm on windows
 mqttver = int(paho.mqtt.__version__[0:1])
 if mqttver < 2:  # breaking changes introduced at v2
     client_conn = mqtt.Client(client_id)
+    client_conn.on_connect = on_connect_v1
 else:
     client_conn = mqtt.Client(client_id=client_id, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-
-client_conn.on_connect = on_connect
+    client_conn.on_connect = on_connect
 
 if debug:
     client_conn.on_log = on_log
