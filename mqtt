@@ -10,6 +10,7 @@ import configparser
 import json
 import os
 import os.path
+import paho.mqtt
 import paho.mqtt.client as mqtt
 import signal
 import ssl
@@ -185,21 +186,23 @@ def on_log(client, userdata, level, buf) -> None:
 
 
 ####################################################
-def on_connect(client, userdata, flags, rc) -> None:
+# def on_connect(client, userdata, flags, rc) -> None:  # V2 added/changed reason_code, properties
+def on_connect(client, userdata, flags, reason_code, properties) -> None:
     """
     The callback for when the client receives a CONNACK response from the server.
 
     :param: client: UNUSED
     :param: userdata: UNUSED
     :param: flags: UNUSED
-    :param: rc: Resul code
+    :param: reason_code
+    :param: properties
     :return: None
     """
     global args, connected
 
     # checking for problems:
 
-    rc_codes = {
+    rc_codes = {  # V1 reason codes
         1: 'incorrect protocol version',
         2: 'invalid client identifier',
         3: 'server unavailable',
@@ -207,9 +210,14 @@ def on_connect(client, userdata, flags, rc) -> None:
         5: 'not authorised'
     }
 
-    if rc != 0:
-        reason = rc_codes[rc] if rc in rc_codes else 'unspecified'
-        print_answer("message", "connect failed with RC " + rc + ": " + reason + ". exiting", "rc", rc)
+    if reason_code != 0:  # Works in V1/V2
+        if reason_code is mqtt.ReasonCode:  # in V2 using as object
+            reason = reason_code
+        else:
+            reason = rc_codes[reason_code] if reason_code in rc_codes else 'unspecified'
+
+        print_answer("message", "connect failed with RC " + reason_code + ": " + reason + ". exiting",
+                     "rc", reason_code)
         bailout(1)
 
     # connect() will set connected to false before reconnect attempt, so we know if it us of automatic
@@ -291,7 +299,7 @@ def on_message(client, userdata, msg) -> None:
 
 
 ####################################################
-def on_publish(client, userdata, mid) -> None:
+def on_publish(client, userdata, mid, reason_codes, properties) -> None:
     """
     The callback for when a PUBLISH has been done.
     BUG: Unused due to apparent lack of this event callback initiation in mqtt.
@@ -299,6 +307,8 @@ def on_publish(client, userdata, mid) -> None:
     :param: client: UNUSED
     :param: userdata: UNUSED
     :param: mid: Message ID
+    :param: reason_codes
+    :param: properties
     :return: None
     """
     global mids
@@ -408,12 +418,12 @@ def will_set(topic: str, payload, qos=0, retain=False) -> None:
 
     set_alarm(30, "will_set()", False)
 
-    mi = client_conn.will_set(topic, payload, qos, retain)
+    client_conn.will_set(topic, payload, qos, retain)
 
     clear_alarm()
 
     if not args.quiet:
-        print_answer("message", "will is set", "rc", mi.rc, "id", mi.mid,
+        print_answer("message", "will is set", "rc", 0,
                      "topic", t, "payload", payload.replace('"', '\"'))
 
 
@@ -637,6 +647,7 @@ parser.add_argument('section', nargs='?', default='', help='The name of .ini sec
 
 args = parser.parse_args()
 
+# Processing config
 load_config(args.config_path, "/etc/smarthome/mqtt/")
 
 config_section = args.section
@@ -651,6 +662,9 @@ if config_section not in config:
 
 config_section = config[config_section]
 
+# Processing cmd-line arguments and defaults
+
+# Setting up debugging
 debug = False
 
 if args.debug:
@@ -661,6 +675,7 @@ elif 'debug' in config_section:
 if debug:
     print(". mqtt-tool: Using .ini section: ", config_section, file=sys.stderr)
 
+# Setting up client ID for MQTT broker
 client_id = ''
 if args.clientid != '':
     client_id = args.clientid
@@ -671,19 +686,27 @@ else:
 
 client_id.replace('RANDOM_UUID', str(uuid.uuid4()), 1)
 
+# Some signals to handle
 if hasattr(signal, 'SIGALRM'):  # no alarm on windows
     signal.signal(signal.SIGALRM, handle_alarm)
 
 if hasattr(signal, 'SIGPIPE'):  # no alarm on windows
     signal.signal(signal.SIGPIPE, handle_sigpipe)
 
-client_conn = mqtt.Client(client_id)
+# Setting up mqtt client
+mqttver = int(paho.mqtt.__version__[0:1])
+if mqttver < 2:  # breaking changes introduced at v2
+    client_conn = mqtt.Client(client_id)
+else:
+    client_conn = mqtt.Client(client_id=client_id, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+
 client_conn.on_connect = on_connect
 
 if debug:
     client_conn.on_log = on_log
     client_conn.enable_logger()
 
+# Setting up authentication
 authmode = ''  # this will be a debug message to user. Also, an indication of auth settings error if it comes empty
 
 if args.username != '':  # use to switch ACLs
@@ -729,10 +752,12 @@ if authmode == '':
 if debug:
     print(". mqtt-tool: auth mode:", authmode, file=sys.stderr)
 
+# Setting up other options
 set_config_default('keepalive', 20)
 set_config_default('max_inactivity', 180)  # seconds
 
 # --------------------------------------------
+# Running in various modes
 if args.stdin_mode:
     go_stdin()
     bailout()
