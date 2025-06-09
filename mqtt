@@ -30,7 +30,7 @@ def bailout(exit_code=0, msg=None) -> None:
     :return: None
     """
     if msg is not None:
-        print('!', msg, file=sys.stderr)
+        print('ERROR:', msg, file=sys.stderr)
 
     sys.stdout.flush()
     sys.stderr.flush()
@@ -52,7 +52,7 @@ def handle_alarm(*_) -> None:
     reconnect_on_timeout = False  # indicate that mqtt operations should be retried
 
     if debug:
-        print("! Timeout in", alarm_place, file=sys.stderr)
+        print("ERROR: Timeout in", alarm_place, file=sys.stderr)
 
     # connect() will trace all errors
     reconnect()
@@ -135,7 +135,7 @@ def load_config(config_file, default_path) -> None:
 
     if not os.path.exists(file):
         if file.find(r'/') < 0:  # full path there - can't go default
-            print("! Can't open config: " + file, file=sys.stderr)
+            print("ERROR: Can't open config: " + file, file=sys.stderr)
             sys.exit(1)
 
         file = os.path.dirname(sys.argv[0]) + '/' + config_file
@@ -182,7 +182,7 @@ def on_log(client, userdata, level, buf) -> None:
     :param: buf: UNUSED
     :return: None
     """
-    print('#', buf, file=sys.stderr)
+    print('LOG: ', buf, file=sys.stderr)
 
 
 ####################################################
@@ -203,7 +203,7 @@ def on_connect(client, userdata, flags, reason_code, properties) -> None:
     # checking for problems:
 
     if reason_code != 0:  # Works in V1/V2
-        print_answer("message", "connect failed with RC " + reason_code + ". exiting")
+        print_answer("message", "connect failed with RC " + str(reason_code) + ". exiting")
         bailout(1)
 
     # connect() will set connected to false before reconnect attempt, so we know if it us of automatic
@@ -299,33 +299,6 @@ def on_message(client, userdata, msg) -> None:
     print_answer("subscription", str(msg.topic).replace('"', '\"'),
                  "message", str(msg.payload).replace('"', '\"'))
     messages_received += 1
-
-
-####################################################
-def on_publish(client, userdata, mid, reason_codes, properties) -> None:
-    """
-    The callback for when a PUBLISH has been done.
-    BUG: Unused due to apparent lack of this event callback initiation in mqtt.
-
-    :param: client: UNUSED
-    :param: userdata: UNUSED
-    :param: mid: Message ID
-    :param: reason_codes
-    :param: properties
-    :return: None
-    """
-    global mids
-
-    if mid not in mids:
-        print_answer("message", "untracked message callback detected", "rc", "1", "id", mid)
-        return
-
-    (topic, msg) = mids[mid]  # save for reporting below
-    del mids[mid]
-
-    if not args.quiet:
-        print_answer("message", "published", "rc", "0", "id", mid,
-                     "topic", topic, "payload", msg.replace('"', '\"'))
 
 
 ####################################################
@@ -485,7 +458,6 @@ def go_stdin() -> None:
     """
     global args, client_conn, connected, config_section, debug, mids
     client_conn.on_message = on_message
-    #  client_conn.on_publish = on_publish #  NOTE: this stuff doesn't work for some obscure reason
 
     incoming_msg = ""
 
@@ -518,11 +490,11 @@ def go_stdin() -> None:
 
         try:
             json_parsed = json.loads(incoming_msg)
-        except:
+        except json.JSONDecodeError:
             print_answer("message", "invalid json", "rc", 1)
 
             if debug:
-                print("!D: Invalid json arrived:", incoming_msg, file=sys.stderr)
+                print("DEBUG: Invalid json arrived:", incoming_msg, file=sys.stderr)
 
             continue
         finally:
@@ -767,7 +739,7 @@ if args.stdin_mode:
 
 # --------------------------------------------
 if args.topics is None:
-    print("! mqtt-tool: Topic(s) are undefined!", file=sys.stderr)
+    print("ERROR: mqtt-tool: Topic(s) are undefined!", file=sys.stderr)
     parser.print_help()
     bailout(1)
 
@@ -779,7 +751,7 @@ if args.subscribe:
 
 # --------------------------------------------
 if args.message is None:
-    print("! mqtt-tool: Message is not provided!", file=sys.stderr)
+    print("ERROR: mqtt-tool: Message is not provided!", file=sys.stderr)
     parser.print_help()
     bailout(1)
 
