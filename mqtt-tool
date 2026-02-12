@@ -30,7 +30,7 @@ def bailout(exit_code=0, msg=None) -> None:
     :return: None
     """
     if msg is not None:
-        print('ERROR:', msg, file=sys.stderr)
+        print('! mqtt-tool ERROR:', msg, file=sys.stderr)
 
     sys.stdout.flush()
     sys.stderr.flush()
@@ -47,12 +47,12 @@ def handle_alarm(*_) -> None:
     global alarm_place, debug, reconnect_on_timeout
 
     if not reconnect_on_timeout:
-        bailout(1, "! alarm loop or client input timeout in " + alarm_place + ". Exiting")
+        bailout(1, "! mqtt-tool: alarm loop or client input timeout in " + alarm_place + ". Exiting")
 
     reconnect_on_timeout = False  # indicate that mqtt operations should be retried
 
     if debug:
-        print("ERROR: Timeout in", alarm_place, file=sys.stderr)
+        print("! mqtt-tool ERROR: Timeout in", alarm_place, file=sys.stderr)
 
     # connect() will trace all errors
     reconnect()
@@ -135,7 +135,7 @@ def load_config(config_file, default_path) -> None:
 
     if not os.path.exists(file):
         if file.find(r'/') < 0:  # full path there - can't go default
-            print("ERROR: Can't open config: " + file, file=sys.stderr)
+            print("mqtt-tool ERROR: Can't open config: " + file, file=sys.stderr)
             sys.exit(1)
 
         file = os.path.dirname(sys.argv[0]) + '/' + config_file
@@ -144,7 +144,7 @@ def load_config(config_file, default_path) -> None:
             file = default_path + "/" + config_file
 
         if not os.path.exists(file):
-            bailout(1, "! Can't find your config anywhere")
+            bailout(1, "! mqtt-tool ERROR: Can't find your config anywhere")
 
     config = configparser.ConfigParser(interpolation=configparser.ExtendedInterpolation())
     config.read(file)
@@ -153,22 +153,27 @@ def load_config(config_file, default_path) -> None:
 ####################################################
 def print_answer(*kw) -> None:
     """
-    Use to print simple json from input args array.
+    Use to print simple JSON from input args array.
     Adds time info at the end.
 
-    :param: kw: key1, val1, etc
+    :param: kw: key1, val1, etc.
     :return: None
     """
-    print('"{', end="")
+    msg = '{'
 
-    iskw = True
+    iskw = True  # to distinguish json keyword from its value
     for i in kw:
-        print('"', i, '"', ":" if iskw else ", ", end="", sep="")
+        msg += '"' + str(i) + '"' + (":" if iskw else ", ")
         iskw = not iskw
 
-    print('"mqtt-tool":{',
-          '"answer_date_time":"' + time.strftime("%Y-%m-%dT%H:%M:%S") + '",',
-          '"answer_timestamp":' + str(int(time.time())) + '}}')
+    msg += '"mqtt-tool":{"answer_date_time":"' + time.strftime("%Y-%m-%dT%H:%M:%S") + \
+          '","answer_timestamp":' + str(int(time.time())) + '}}'
+
+    if args.debug:
+        print(". mqtt-tool answering:", msg, file=sys.stderr)
+
+    print(msg)
+    sys.stdout.flush()
 
 
 ####################################################
@@ -214,7 +219,7 @@ def on_connect(client, userdata, flags, reason_code, properties) -> None:
             on_connect.fast_reconnects = 0
 
         if on_connect.fast_reconnects == 3:  # lucky number
-            bailout(1, "mqtt-tool: Too many fast reconnects. exiting.")
+            bailout(1, "Too many fast reconnects. exiting.")
 
     on_connect.connected_on = time.time()
 
@@ -347,11 +352,9 @@ def publish(topic, msg, qos=0, retain=False) -> None:
     if mi.rc == mqtt.MQTT_ERR_SUCCESS:
         mi.wait_for_publish()
         if not args.quiet:
-            print_answer("message", "published", "rc", 0, "id", mi.mid,
-                         "topic", topic, "payload", msg.replace('"', '\"'))
+            print_answer("message", "published", "rc", 0, "id", mi.mid, "topic", topic)
     else:
-        if not args.quiet:
-            print_answer("message", "publish failed", "rc", mi.rc)
+        print_answer("message", "publish failed", "rc", mi.rc)
 
     clear_alarm()
 
@@ -470,7 +473,7 @@ def go_stdin() -> None:
             connected = False  # just flagging for reconnection later
 
             if debug:
-                print("? Triggered the restart of mqtt connection after the long wait", file=sys.stderr)
+                print("? mqtt-tool: Triggered restart of mqtt connection after the long wait", file=sys.stderr)
 
         time.sleep(1)
 
@@ -494,7 +497,7 @@ def go_stdin() -> None:
             print_answer("message", "invalid json", "rc", 1)
 
             if debug:
-                print("DEBUG: Invalid json arrived:", incoming_msg, file=sys.stderr)
+                print("mqtt-tool DEBUG: Invalid json arrived:", incoming_msg, file=sys.stderr)
 
             continue
         finally:
@@ -581,7 +584,8 @@ def set_config_default(key: str, val) -> None:
 ####################################################
 global config
 
-config_path = '/etc/smarthome/mqtt/mqtt.ini'  # default
+DEFAULT_CONFIG_PATH="/etc/smarthome/monitoring/"
+DEFAULT_CONFIG_FILE = os.path.join(DEFAULT_CONFIG_PATH, '/mqtt-tool.ini')
 connected = False  # for handling stuff in stdin mode
 last_input = time.time()  # parent's last input time.
 mids = dict()  # to track messages in stdin mode
@@ -589,19 +593,19 @@ messages_received = 0  # to check if we got answer for one-shot sub
 on_connect.fast_reconnects = 0  # how many attempts to reconnect were within the short time period
 on_connect.connected_on = 0  # time()
 reconnect_on_timeout = False
-alarm_place = ''  # if inactivity limit is set then this will control anti-zombiefying
+alarm_place = ''  # if inactivity limit is set then this will control anti-zombifying
 watchdog = None  # alarm watchdog class instance if any
 ####################################################
 
 parser = argparse.ArgumentParser(
-    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.242.'
+    description='MQTT-Tool: Helper for mqtt messaging for scripts. V1.251.'
                 ' Copyright (c) 2022+ by Andrej Pakhutin')
 
-parser.add_argument('-c', '--config', dest='config_path', action='store', default=config_path,
-                    help='path to non-default (' + config_path + ') config file')
+parser.add_argument('-c', '--config', dest='config_path', action='store', default=DEFAULT_CONFIG_FILE,
+                    help='path to non-default (' + DEFAULT_CONFIG_FILE + ') config file')
 parser.add_argument('--clientid', dest='clientid', action='store', default='',
                     help='Overrides clientid from .ini and autogenerated one')
-parser.add_argument('-d', '--debug', dest='debug', action='store_true', default=False, help='debug mode')
+parser.add_argument('--debug', dest='debug', action='store_true', default=False, help='debug mode')
 parser.add_argument('-i', '--stdin', dest='stdin_mode', action='store_true', default=False,
                     help='work in stdin mode, accepting multiple commands in json')
 parser.add_argument('-m', '--message', dest='message', action='store', help='message to send')
@@ -623,7 +627,7 @@ parser.add_argument('section', nargs='?', default='', help='The name of .ini sec
 args = parser.parse_args()
 
 # Processing config
-load_config(args.config_path, "/etc/smarthome/mqtt/")
+load_config(args.config_path, DEFAULT_CONFIG_PATH)
 
 config_section = args.section
 if config_section == '':
@@ -633,7 +637,7 @@ if config_section == '':
         bailout(1, "! mqtt-tool: Default server is not set in the config. Provide section name in command line")
 
 if config_section not in config:
-    bailout(1, "! mqtt-tool: ERROR. Section name '" + config_section + "' not in " + config_path)
+    bailout(1, "! mqtt-tool: ERROR. Section name '" + config_section + "' not in " + DEFAULT_CONFIG_FILE)
 
 config_section = config[config_section]
 
@@ -662,10 +666,10 @@ else:
 client_id.replace('RANDOM_UUID', str(uuid.uuid4()), 1)
 
 # Some signals to handle
-if hasattr(signal, 'SIGALRM'):  # no alarm on windows
+if hasattr(signal, 'SIGALRM'):  # no alarm on Windows
     signal.signal(signal.SIGALRM, handle_alarm)
 
-if hasattr(signal, 'SIGPIPE'):  # no alarm on windows
+if hasattr(signal, 'SIGPIPE'):  # no alarm on Windows
     signal.signal(signal.SIGPIPE, handle_sigpipe)
 
 # Setting up mqtt client
